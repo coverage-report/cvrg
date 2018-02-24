@@ -1,0 +1,827 @@
+#!/usr/bin/env bash
+
+# Apache License Version 2.0, January 2004
+# https://github.com/cvrg-report/cvrg/blob/master/LICENSE
+
+set -e +o pipefail
+
+# Version info
+version="0.1.0"
+
+# cvrg.report API endpoint
+api_url="https://api.cvrg.report"
+
+# curl arguments
+curl_silent="-s"
+curl_arguments=""
+curl_cacert=""
+
+# Exit code on failure
+failure_exit_code=0
+
+# Other defaults for arguments/options
+dump="0"
+
+# Location of YAML configuration file
+cvrg_yml=""
+
+# Defaults
+stdin_content=""
+stdin_content_str=""
+service_name="local"
+service_job_id=""
+service_pull_request=""
+repo_host=""
+slug=""
+build=""
+token=""
+git_root=$(git rev-parse --show-toplevel 2>/dev/null || echo $PWD)
+git_remotes=""
+git_user_name=$(git log -1 --pretty=%an | cat)
+git_user_email=$(git log -1 --pretty=%ae | cat)
+git_committer_name=$(git log -1 --pretty=%cn | cat)
+git_committer_email=$(git log -1 --pretty=%ce | cat)
+git_commit=$(git rev-parse HEAD)
+git_commit_timestamp=$(git show -s --format=%ct $git_commit)
+git_branch=$(git symbolic-ref HEAD 2>/dev/null | cut -d"/" -f 3)
+git_message=$(git log -1 --pretty=%B | cat)
+git_tag=$(git describe --abbrev=0 2>/dev/null || echo "")
+
+# Colorizing the shell output (see https://stackoverflow.com/a/28938235/1603357)
+x='\033[0m'       # Color reset
+r='\033[0;31m'    # Red
+g='\033[0;32m'    # Green
+y='\033[0;33m'    # Yellow
+b='\033[0;34m'    # Blue
+
+# Message prefixes
+s=" ${g}✓${x}"    # Success
+f=" ${r}✗${x}"    # Failure
+a=" ${y}☞${x}"    # Attention
+
+help() {
+cat << EOF
+
+                      cvrg $version
+
+     Coverage reports uploader to https://cvrg.report
+
+        Documentation at https://docs.cvrg.report
+    Source code at https://github.com/cvrg-report/cvrg
+
+    --- General options ---
+
+    -h        Show this help screen and exit
+    -f        Fail with a exit code of 1 instead of 0
+    -y path   Configuration YAML file path
+    -u url    API endpoint base URL (default: https://api.cvrg.report)
+    -t token  Project token (if not passed via YAML configuration file)
+
+    --- curl options ---
+
+    -c path   Path to your custom cacert.pem file
+    -a args   Additional curl arguments
+
+    --- Project-related overrides ---
+
+    -R path   Project root path
+    -B name   Branch name
+    -C sha    Commit hash
+    -M msg    Commit message
+    -T tag    Tag name
+
+    -n name   Service name (will be filled automatically for known CIs)
+    -j id     Job identifier
+    -b id     Build identifier
+    -p info   Pull request information
+    -s slug   Owner/Repo information
+
+    --- Debugging ---
+
+    -v        Verbose mode
+    -d        Dump the gathered coverage report info (no upload)
+
+EOF
+}
+
+message() {
+  echo -e "$1"
+}
+
+# urlencode function (see https://stackoverflow.com/a/10660730/1603357)
+urlencode() {
+  local string="${1}"
+  local strlen=${#string}
+  local encoded=""
+  local pos c o
+
+  for (( pos=0 ; pos<strlen ; pos++ )); do
+    c=${string:$pos:1}
+    case "$c" in
+      [-_.~a-zA-Z0-9] ) o="${c}" ;;
+      * )               printf -v o '%%%02x' "'$c"
+    esac
+    encoded+="${o}"
+  done
+  echo "${encoded}"
+}
+
+parse_yaml() {
+   local prefix=$2
+   local s='[[:space:]]*' w='[a-zA-Z0-9_]*' fs=$(echo @|tr @ '\034')
+   sed -ne "s|^\($s\)\($w\)$s:$s\"\(.*\)\"$s\$|\1$fs\2$fs\3|p" \
+        -e "s|^\($s\)\($w\)$s:$s\(.*\)$s\$|\1$fs\2$fs\3|p" $1 |
+   awk -F$fs '{
+      indent = length($1)/2;
+      vname[indent] = $2;
+      for (i in vname) {if (i > indent) {delete vname[i]}}
+      if (length($3) > 0) {
+         vn=""; if (indent > 0) {vn=(vn)(vname[0])("_")}
+         printf("%s%s%s=\"%s\"\n", "'$prefix'",vn, $2, $3);
+      }
+   }'
+}
+
+trim() {
+  local trimmed="$1"
+
+  # Strip leading spaces.
+  while [[ $trimmed == ' '* ]]; do
+     trimmed="${trimmed## }"
+  done
+  # Strip trailing spaces.
+  while [[ $trimmed == *' ' ]]; do
+      trimmed="${trimmed%% }"
+  done
+
+  echo "$trimmed"
+}
+
+cleanup() {
+  rm -f $upload_file $upload_file.gz
+}
+
+# Handle arguments/options
+if [ $# != 0 ]; then
+  while getopts "a:b:B:c:C:dfhj:M:n:p:R:s:t:T:u:vy:" o
+  do
+    case "$o" in
+      "a")
+        curl_arguments="$OPTARG"
+        ;;
+      "b")
+        build="$OPTARG"
+        ;;
+      "B")
+        git_branch="$OPTARG"
+        ;;
+      "c")
+        curl_cacert="--cacert \"$OPTARG\""
+        ;;
+      "C")
+        git_commit="$OPTARG"
+        ;;
+      "d")
+        dump="1"
+        ;;
+      "f")
+        failure_exit_code=1
+        ;;
+      "h")
+        help
+        exit 0;
+        ;;
+      "j")
+        service_job_id="$OPTARG"
+        ;;
+      "M")
+        git_message="$OPTARG"
+        ;;
+      "n")
+        service_name="$OPTARG"
+        ;;
+      "p")
+        service_pull_request="$OPTARG"
+        ;;
+      "R")
+        git_root="$OPTARG"
+        ;;
+      "s")
+        slug="$OPTARG"
+        ;;
+      "t")
+        if [ "${OPTARG::1}" = "@" ];
+        then
+          token=$(cat "${OPTARG:1}" | tr -d ' \n')
+        else
+          token="$OPTARG"
+        fi
+        ;;
+      "T")
+        git_tag="$OPTARG"
+        ;;
+      "u")
+        api_url=$(echo "$OPTARG" | sed -e 's/\/$//')
+        ;;
+      "v")
+        set -x
+        curl_silent=""
+        ;;
+      "y")
+        cvrg_yml="$OPTARG"
+        ;;
+    esac
+  done
+fi
+
+# Show logo
+message "
+  ___  _  _  ____   ___     ____  ____  ____   __  ____  ____
+ / __)/ )( \(  _ \ / __)   (  _ \(  __)(  _ \ /  \(  _ \(_  _)
+( (__ \ \/ / )   /( (_ \ _  )   / ) _)  ) __/(  O ))   /  )(
+ \___) \__/ (__\_) \___/(_)(__\_)(____)(__)   \__/(__\_) (__)
+                                               Version: $version
+"
+
+# Check for piped input via stdin
+if [ -t 0 ]; then
+    message "${s} Running interactively"
+else
+    stdin_content=$(cat)
+    stdin_len=$(echo -n "$stdin_content" | wc -m)
+    stdin_content_str=$(echo "$stdin_content" | sed -e ':a' -e 'N' -e '$!ba' -e 's/\n/\\n/g')
+    message "${s} Got piped input ($(trim $stdin_len) bytes)"
+fi
+
+# Drone CI
+if [[ ! -z "$DRONE" ]]; then
+    message "${s} Drone CI detected"
+    service_name="drone-ci"
+    service_job_id="$DRONE_JOB_NUMBER"
+    service_pull_request="$DRONE_PULL_REQUEST"
+    build="$DRONE_BUILD_NUMBER"
+    git_committer_name="$DRONE_COMMIT_AUTHOR"
+    git_committer_email="$DRONE_COMMIT_AUTHOR_EMAIL"
+    git_commit="$DRONE_COMMIT"
+    git_branch="$DRONE_BRANCH"
+    git_message="$DRONE_COMMIT_MESSAGE"
+    git_tag="$DRONE_TAG"
+fi
+
+# Travis CI
+if [ "$CI" = "true" ] && [ "$TRAVIS" = "true" ] && [ "$SHIPPABLE" != "true" ]; then
+    message "${s} Travis CI detected"
+    service_name="travis-ci"
+    service_job_id="$TRAVIS_JOB_ID"
+    service_pull_request="$TRAVIS_PULL_REQUEST"
+    slug="$TRAVIS_REPO_SLUG"
+    build="$TRAVIS_JOB_NUMBER"
+    git_tag="$TRAVIS_TAG"
+    git_commit="${TRAVIS_PULL_REQUEST_SHA:-$TRAVIS_COMMIT}"
+    if [ "$TRAVIS_BRANCH" != "$TRAVIS_TAG" ]; then
+      git_branch="$TRAVIS_BRANCH"
+    fi
+fi
+
+# Jenkins
+if [[ ! -z "$JENKINS_URL" || ! -z "$JENKINS_HOME" ]]; then
+  message "${s} Jenkins detected"
+  service_name="jenkins-ci"
+  service_job_id="$BUILD_ID"
+
+  if [ "$ghprbSourceBranch" != "" ]; then
+    git_branch="$ghprbSourceBranch"
+  elif [ "$GIT_BRANCH" != "" ]; then
+    git_branch="$GIT_BRANCH"
+  elif [ "$BRANCH_NAME" != "" ]; then
+    git_branch="$BRANCH_NAME"
+  fi
+
+  if [ "$ghprbActualCommit" != "" ]; then
+    git_commit="$ghprbActualCommit"
+  elif [ "$GIT_COMMIT" != "" ]; then
+    git_commit="$GIT_COMMIT"
+  fi
+
+  if [ "$ghprbPullId" != "" ]; then
+    service_pull_request="$ghprbPullId"
+  elif [ "$CHANGE_ID" != "" ]; then
+    service_pull_request="$CHANGE_ID"
+  fi
+fi
+
+# Circle CI
+if [[ ! -z "$CIRCLECI" ]]; then
+  message "${s} Circle CI detected"
+  service_name="circle-ci"
+  service_job_id="$CIRCLE_NODE_INDEX"
+  service_pull_request="$CIRCLE_PR_NUMBER"
+  build="$CIRCLE_BUILD_NUM"
+  git_commit="$CIRCLE_SHA1"
+  git_branch="$CIRCLE_BRANCH"
+  if [ "$CIRCLE_PROJECT_REPONAME" != "" ]; then
+    slug="$CIRCLE_PROJECT_USERNAME/$CIRCLE_PROJECT_REPONAME"
+  else
+    slug="${CIRCLE_REPOSITORY_URL##*:}"
+    slug="${slug%%.git}"
+  fi
+fi
+
+# Codeship
+if [[ ! -z "$CI_NAME" && "$CI_NAME" == "codeship" ]]; then
+  message "${s} Codeship CI detected"
+  service_name="codeship"
+  service_job_id="$CI_BUILD_NUMBER"
+  git_committer_name="$CI_COMMITTER_NAME"
+  git_committer_email="$CI_COMMITTER_EMAIL"
+  git_commit="$CI_COMMIT_ID"
+  git_branch="$CI_BRANCH"
+  git_message="$CI_MESSAGE"
+fi
+
+# Buddybuild
+if [ "$BUDDYBUILD_BRANCH" != "" ]; then
+  message "${s} Buddybuild detected"
+  service_name="buddybuild"
+  build="$BUDDYBUILD_BUILD_NUMBER"
+  git_branch="$BUDDYBUILD_BRANCH"
+fi
+
+# Bamboo
+if [ "${bamboo_planRepository_revision}" != "" ]; then
+  message "${s} Bamboo CI detected"
+  service_name="bamboo"
+  build="${bamboo_buildNumber}"
+  git_commit="${bamboo_planRepository_revision}"
+  git_branch="${bamboo_planRepository_branch}"
+fi
+
+# Bitrise
+if [ "$CI" = "true" ] && [ "$BITRISE_IO" = "true" ]; then
+  message "${s} Bitrise detected"
+  service_name="bitrise"
+  service_pull_request="$BITRISE_PULL_REQUEST"
+  build="$BITRISE_BUILD_NUMBER"
+  git_branch="$BITRISE_GIT_BRANCH"
+  if [ "$GIT_CLONE_COMMIT_HASH" != "" ]; then
+    git_commit="$GIT_CLONE_COMMIT_HASH"
+  fi
+fi
+
+# Buildkite
+if [ "$CI" = "true" ] && [ "$BUILDKITE" = "true" ]; then
+  message "${s} Buildkite detected"
+  service_name="buildkite"
+  service_job_id="$BUILDKITE_JOB_ID"
+  if [[ "$BUILDKITE_PULL_REQUEST" != "false" ]]; then
+    service_pull_request="$BUILDKITE_PULL_REQUEST"
+  fi
+  build="$BUILDKITE_BUILD_NUMBER"
+  slug="$BUILDKITE_PROJECT_SLUG"
+  git_branch="$BUILDKITE_BRANCH"
+  git_commit="$BUILDKITE_COMMIT"
+  git_tag="$BUILDKITE_TAG"
+fi
+
+# Heroku
+if [ "$HEROKU_TEST_RUN_BRANCH" != "" ]; then
+  message "${s} Heroku detected"
+  service_name="heroku"
+  service_job_id="$HEROKU_TEST_RUN_ID"
+  git_branch="$HEROKU_TEST_RUN_BRANCH"
+fi
+
+# Codefresh
+if [ ! -z "$CF_BUILD_URL" ] && [ ! -z "$CF_BUILD_ID" ]; then
+  message "${s} Codefresh detected"
+  service_name="codefresh"
+  service_job_id="$CF_BUILD_ID"
+  git_commit="$CF_REVISION"
+  git_branch="$CF_BRANCH"
+fi
+
+# Wercker
+if [[ ! -z "$WERCKER" ]]; then
+  message "${s} Wercker detected"
+  service_name="wercker"
+  service_job_id="$WERCKER_BUILD_ID"
+  slug="$WERCKER_GIT_OWNER/$WERCKER_GIT_REPOSITORY"
+  git_commit="$WERCKER_GIT_COMMIT"
+  git_branch="$WERCKER_GIT_BRANCH"
+fi
+
+# Magnum
+if [ "$CI" = "true" ] && [ "$MAGNUM" = "true" ]; then
+  message "${s} Magnum detected"
+  service_name="magnum"
+  build="$CI_BUILD_NUMBER"
+  git_branch="$CI_BRANCH"
+  git_commit="$CI_COMMIT"
+fi
+
+# GitLab CI
+if [[ ! -z "$GITLAB_CI" ]]; then
+  message "${s} GitLab CI detected"
+  service_name="gitlab-ci"
+  service_job_id="$CI_BUILD_ID"
+  build="${CI_BUILD_ID:-$CI_JOB_ID}"
+  git_commit="${CI_BUILD_REF:-$CI_COMMIT_SHA}"
+  git_branch="${CI_BUILD_REF_NAME:-$CI_COMMIT_REF_NAME}"
+fi
+
+# Greenhouse CI
+if [ "$GREENHOUSE" = "true" ]; then
+  message "${s} Greenhouse CI detected"
+  service_name="greenhouse"
+  service_pull_request="$GREENHOUSE_PULL_REQUEST"
+  build="$GREENHOUSE_BUILD_NUMBER"
+  git_branch="$GREENHOUSE_BRANCH"
+  git_commit="$GREENHOUSE_COMMIT"
+fi
+
+# AppVeyor
+if [ "$CI" = "True" ] && [ "$APPVEYOR" = "True" ]; then
+  message "${s} AppVeyor detected"
+  service_name="appveyor"
+  service_job_id="$APPVEYOR_BUILD_ID"
+  service_pull_request="$APPVEYOR_PULL_REQUEST_NUMBER"
+  slug="$APPVEYOR_REPO_NAME"
+  git_committer_name="$APPVEYOR_REPO_COMMIT_AUTHOR"
+  git_committer_email="$APPVEYOR_REPO_COMMIT_AUTHOR_EMAIL"
+  git_commit="$APPVEYOR_REPO_COMMIT"
+  git_commit_timestamp="$APPVEYOR_REPO_COMMIT_TIMESTAMP"
+  git_branch="$APPVEYOR_REPO_BRANCH"
+  git_message="$APPVEYOR_REPO_COMMIT_MESSAGE"
+fi
+
+# Shippable
+if [[ ! -z "$SHIPPABLE" ]]; then
+  message "${s} Shippable detected"
+  service_name="shippable"
+  service_job_id="$SHIPPABLE_BUILD_ID"
+  service_pull_request="$PULL_REQUEST"
+  build="$BUILD_NUMBER"
+  slug="$REPO_FULL_NAME"
+  git_committer_name="$COMMITTER"
+  git_commit="$COMMIT"
+  git_branch=$([ "$HEAD_BRANCH" != "" ] && echo "$HEAD_BRANCH" || echo "$BRANCH")
+  git_message="$COMMIT_MESSAGE"
+fi
+
+# Semaphore
+if [[ ! -z "$SEMAPHORE" ]]; then
+  message "${s} Semaphore detected"
+  service_name="semaphore "
+  service_job_id="$SEMAPHORE_BUILD_NUMBER"
+  service_pull_request="$PULL_REQUEST_NUMBER"
+  build="$SEMAPHORE_BUILD_NUMBER"
+  slug="$SEMAPHORE_REPO_SLUG"
+  git_branch="$BRANCH_NAME"
+  git_commit="$REVISION"
+fi
+
+# Get slug
+if [ "$slug" = "" ]; then
+  if [ "$remote_addr" = "" ]; then
+    remote_addr=$(git config --get remote.origin.url || echo '')
+  fi
+  if [ "$remote_addr" != "" ]; then
+    if echo "$remote_addr" | grep -q "//"; then
+      # https
+      slug=$(echo "$remote_addr" | cut -d / -f 4,5 | sed -e 's/\.git$//')
+      repo_host=$(echo "$remote_addr" | cut -d / -f 3 | sed -e 's/\.com$//')
+    else
+      # ssh
+      slug=$(echo "$remote_addr" | cut -d : -f 2 | sed -e 's/\.git$//')
+      repo_host=$(echo "$remote_addr" | cut -d @ -f 2 | cut -d . -f 1)
+    fi
+  fi
+  if [ "$slug" = "/" ]; then
+    slug=""
+  fi
+fi
+
+# Placeholder for Git remotes
+tmp_remotes_array=()
+
+# Read Git remotes
+IFS=$'\n' remote_array=($(git remote))
+for remote in "${remote_array[@]}"
+do
+	tmp_remotes_array+=("$remote,$(git config --get remote.$remote.url)")
+done
+
+# Join Git remotes
+git_remotes=$(IFS=";" ; echo "${tmp_remotes_array[*]}")
+
+# Look for YAML config file
+yaml=$(test -n "$cvrg_yml" && echo "$cvrg_yml" \
+       || cd "$git_root" && git ls-files "*cvrg.yml" "*cvrg.yaml" 2>/dev/null \
+       || cd "$git_root" && find . -type f -name '*cvrg.y*ml' -depth 1 2>/dev/null \
+       || echo '')
+yaml=$(echo "$yaml" | head -1)
+
+# Parse YAML config and set values
+if [ "$yaml" != "" ]; then
+  message "${s} Yaml configuration found at $yaml"
+  config=$(parse_yaml "$git_root/$yaml" || echo '')
+  if [ "$(echo "$config" | grep 'cvrg_token="')" != "" ] && [ "$token" = "" ]; then
+    message "${s} Token set from yaml configuration$"
+    token="$(echo "$config" | grep 'cvrg_token="' | sed -e 's/cvrg_token="//' | sed -e 's/"\.*//')"
+  fi
+
+  if [ "$(echo "$config" | grep 'cvrg_slug="')" != "" ] && [ "$slug" = "" ]; then
+    message "${s} Slug set from yaml configuration"
+    slug="$(echo "$config" | grep 'cvrg_slug="' | sed -e 's/cvrg_slug="//' | sed -e 's/"\.*//')"
+  elif  [ "$slug" != "" ]; then
+    message "${s} Slug set from git remote"
+  fi
+else
+  message "${f} Yaml configuration file not found, but that's fine! Learn more at http://docs.cvrg.report/cvrg-yaml"
+fi
+
+# Coverage report file patterns
+patterns="find $git_root \( \
+        -name vendor \
+        -or -name htmlcov \
+        -or -name virtualenv \
+        -or -name js/generated/coverage \
+        -or -name .virtualenv \
+        -or -name virtualenvs \
+        -or -name .virtualenvs \
+        -or -name .env \
+        -or -name .envs \
+        -or -name env \
+        -or -name .yarn-cache \
+        -or -name envs \
+        -or -name .venv \
+        -or -name .venvs \
+        -or -name venv \
+        -or -name venvs \
+        -or -name .git \
+        -or -name .hg \
+        -or -name .tox \
+        -or -name __pycache__ \
+        -or -name '.egg-info*' \
+        -or -name node_modules \
+        -or -name 'conftest_*.c.gcov' \
+    \) -prune -or \
+    -type f \( -name '*coverage*.*' \
+        -or -name 'nosetests.xml' \
+        -or -name 'jacoco*.xml' \
+        -or -name 'clover.xml' \
+        -or -name 'report.xml' \
+        -or -name '*.codecov.*' \
+        -or -name 'codecov.*' \
+        -or -name 'cobertura.xml' \
+        -or -name 'excoveralls.json' \
+        -or -name 'luacov.report.out' \
+        -or -name 'coverage-final.json' \
+        -or -name 'naxsi.info' \
+        -or -name 'lcov.info' \
+        -or -name 'lcov.dat' \
+        -or -name '*.lcov' \
+        -or -name '*.clover' \
+        -or -name 'cover.out' \
+        -or -name 'gcov.info' \
+        -or -name '*.gcov' \
+        -or -name '*.lst' \
+    \) \
+        -not -name '*.profdata' \
+        -not -name 'coverage-summary.json' \
+        -not -name 'phpunit-code-coverage.xml' \
+        -not -name '*/classycle/report.xml' \
+        -not -name 'remapInstanbul.coverage*.json' \
+        -not -name 'phpunit-coverage.xml' \
+        -not -name '*codecov.yml' \
+        -not -name '*.serialized' \
+        -not -name '.coverage*' \
+        -not -name '.*coveragerc' \
+        -not -name '*.sh' \
+        -not -name '*.bat' \
+        -not -name '*.ps1' \
+        -not -name '*.env' \
+        -not -name '*.cmake' \
+        -not -name '*.dox' \
+        -not -name '*.ec' \
+        -not -name '*.rst' \
+        -not -name '*.h' \
+        -not -name '*.scss' \
+        -not -name '*.o' \
+        -not -name '*.proto' \
+        -not -name '*.sbt' \
+        -not -name '*.xcoverage.*' \
+        -not -name '*.gz' \
+        -not -name '*.conf' \
+        -not -name '*.p12' \
+        -not -name '*.csv' \
+        -not -name '*.rsp' \
+        -not -name '*.m4' \
+        -not -name '*.pem' \
+        -not -name '*~' \
+        -not -name '*.exe' \
+        -not -name '*.am' \
+        -not -name '*.template' \
+        -not -name '*.cp' \
+        -not -name '*.bw' \
+        -not -name '*.crt' \
+        -not -name '*.log' \
+        -not -name '*.cmake' \
+        -not -name '*.pth' \
+        -not -name '*.in' \
+        -not -name '*.jar*' \
+        -not -name '*.pom*' \
+        -not -name '*.png' \
+        -not -name '*.jpg' \
+        -not -name '*.sql' \
+        -not -name '*.jpeg' \
+        -not -name '*.svg' \
+        -not -name '*.gif' \
+        -not -name '*.csv' \
+        -not -name '*.snapshot' \
+        -not -name '*.mak*' \
+        -not -name '*.bash' \
+        -not -name '*.data' \
+        -not -name '*.py' \
+        -not -name '*.class' \
+        -not -name '*.xcconfig' \
+        -not -name '*.ec' \
+        -not -name '*.coverage' \
+        -not -name '*.pyc' \
+        -not -name '*.cfg' \
+        -not -name '*.egg' \
+        -not -name '*.ru' \
+        -not -name '*.css' \
+        -not -name '*.less' \
+        -not -name '*.pyo' \
+        -not -name '*.whl' \
+        -not -name '*.html' \
+        -not -name '*.ftl' \
+        -not -name '*.erb' \
+        -not -name '*.rb' \
+        -not -name '*.js' \
+        -not -name '*.jade' \
+        -not -name '*.db' \
+        -not -name '*.md' \
+        -not -name '*.cpp' \
+        -not -name '*.gradle' \
+        -not -name '*.tar.tz' \
+        -not -name '*.scss' \
+        -not -name 'include.lst' \
+        -not -name 'fullLocaleNames.lst' \
+        -not -name 'inputFiles.lst' \
+        -not -name 'createdFiles.lst' \
+        -not -name 'scoverage.measurements.*' \
+        -not -name 'test_*_coverage.txt' \
+        -not -name 'testrunner-coverage*' \
+        -print 2>/dev/null"
+
+# Search for coverage report files
+files=$(eval "$patterns" || echo '')
+
+# Count found files
+num_of_files=$(echo "$files" | wc -l | tr -d ' ')
+
+if [ "$num_of_files" != '' ] && [ "$files" != '' ]; then
+  message "${s} Found $num_of_files reports"
+elif [ "$stdin_content" != '' ]; then
+  message "${s} Found report data via stdin"
+else
+  message "${f} No report data found"
+  exit $failure_exit_code;
+fi
+
+# Get timestamp
+run_at_timestamp=$(date +"%s")
+
+# Create temporary upload file
+upload_file=`mktemp /tmp/cvrg.XXXXXXXX`
+
+# Cleanup
+#trap cleanup INT ABRT TERM
+
+# Read coverage reports
+fr=0
+while IFS='' read -r file;
+do
+  # Read each coverage report file
+  if [ "$(echo "$file" | tr -d ' ')" != '' ]; then
+    if [ -f "$file" ]; then
+      # Get length of file
+      report_len=$(wc -c < "$file")
+      if [ "$report_len" -ne 0 ]; then
+        message "    ${g}+${x} $(echo "$file" | sed "s|^$git_root/||") ($(echo "$report_len" | tr -d ' ') bytes)"
+        # append to to upload
+        _filename=$(basename "$file")
+        if [ "${_filename##*.}" = 'gcov' ]; then
+          echo "# path=$(echo "$file.reduced" | sed "s|^$git_root/||")" >> $upload_file
+          head -1 $file >> $upload_file
+          awk -F': *' '{print $1":"$2":"}' $file \
+            | sed '\/: *} *$/d' \
+            | sed 's/^ *//' \
+            | sed '/^-/d' \
+            | sed 's/^function.*/func/' >> $upload_file
+        else
+          echo "# path=$(echo "$file" | sed "s|^$git_root/||")" >> $upload_file
+          cat "$file" >> $upload_file
+        fi
+        echo "<<<<<< EOF" >> $upload_file
+        fr=1
+      else
+        message "    ${r}-${x} Skipping empty file $file"
+      fi
+    else
+      message "    ${r}-${x} File not found at $file"
+    fi
+  fi
+done <<< "$(echo -e "$files")"
+
+if [ "$fr" = "0" ]; then
+  message "${f} No coverage data found."
+  message "    ${r}+${x}Please visit ${b}http://docs.cvrg.report/supported-languages${x}"
+  exit $failure_exit_code;
+fi
+
+# Prepare query string
+query="service_name=$service_name\
+       &service_job_id=$service_job_id\
+       &service_pull_request=$service_pull_request\
+       &repo_host=$repo_host\
+       &slug=$(urlencode "$slug")\
+       &build=$build\
+       &git_root=$(urlencode "$git_root")\
+       &git_remotes=$(urlencode "$git_remotes")\
+       &git_user_name=$(urlencode "$git_user_name")\
+       &git_user_email=$(urlencode "$git_user_email")\
+       &git_committer_name=$(urlencode "$git_committer_name")\
+       &git_committer_email=$(urlencode "$git_committer_email")\
+       &git_commit=$git_commit\
+       &git_commit_timestamp=$git_commit_timestamp\
+       &git_message=$(urlencode "$git_message")\
+       &git_tag=$(urlencode "$git_tag")\
+       &run_at_timestamp=$run_at_timestamp"
+
+if [ "$dump" != "0" ]; then
+  query=$(echo "${query}" | tr -d ' ')
+  message "${s} Dumping upload file (no upload)"
+  message "    ${g}+${x} URL: ${b}$api_url${x}"
+  message "    ${g}+${x} Query:${x} $query"
+  cat $upload_file
+  exit 0
+else
+  message "${s} Preparing upload file"
+  gzip -nf9 $upload_file
+
+  query=$(echo "${query}" | tr -d ' ')
+  message "${s} Uploading coverage reports to cvrg.report"
+  message "    ${g}+${x} URL: ${b}$api_url${x}"
+  message "    ${g}+${x} Query:${x} $query"
+  message "    ${g}+${x} Starting upload..."
+
+  # Add token to query
+  query=$(echo "package=cvrg-$version&token=$token&$query" | tr -d ' ')
+
+  # Upload to cvrg.report
+  i="0"
+  while [ $i -lt 4 ]
+  do
+
+    # Count interations
+    i=$[$i+1]
+
+    # Incremental back-off
+    timeout=$[$i*10]
+
+    # Send request and capture response
+    response=$(curl $curl_silent $curl_cacert -w "%{http_code}\n%{time_total}" -X POST \
+          --data-binary @$upload_file.gz \
+          -H "Content-Type: text/plain" \
+          -H "Content-Encoding: gzip" \
+          -H "X-Content-Encoding: gzip" \
+          -H "Accept: text/plain" \
+          "$api_url/coverage?$query" || echo "\n500\n0")
+
+    # Derive report link, status and time taken
+    link=$(echo "$response" | head -1)
+    status=$(echo "$response" | head -2 | tail -n1)
+    time_taken=$(echo "$response" | head -3 | tail -n1)
+
+    # Needs to be a 201 Created
+    if [ "$status" = "201" ]; then
+      message "${s} Upload successful in ${time_taken}s"
+      message "${s} View reports at ${b}$(echo "$link")${x}"
+      exit 0
+    elif [ "${status:0:1}" = "5" ]; then
+      message "${a} Got an error from the API. Sleeping for ${timeout}s and trying again..."
+      sleep $timeout
+    else
+      message "${f} Got an unexpected response:\n${response}\n${r}Exiting.${x}"
+      exit $failure_exit_code
+    fi
+
+  done
+
+  message "${f} Could not upload the coverage reports to cvrg.report after ${i} tries. Exiting."
+  exit $failure_exit_code
+
+fi
