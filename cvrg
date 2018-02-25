@@ -682,63 +682,62 @@ files=$(eval "$patterns" || echo '')
 # Count found files
 num_of_files=$(echo "$files" | wc -l | tr -d ' ')
 
-if [ "$num_of_files" != '' ] && [ "$files" != '' ]; then
-  message "${s} Found $num_of_files reports"
-elif [ "$stdin_content" != '' ]; then
-  message "${s} Found report data via stdin"
-else
-  message "${f} No report data found"
-  exit $failure_exit_code;
-fi
-
 # Get timestamp
 run_at_timestamp=$(date +"%s")
 
 # Create temporary upload file
 upload_file=`mktemp /tmp/cvrg.XXXXXXXX`
 
-# Cleanup
-#trap cleanup INT ABRT TERM
-
-# Read coverage reports
-fr=0
-while IFS='' read -r file;
-do
-  # Read each coverage report file
-  if [ "$(echo "$file" | tr -d ' ')" != '' ]; then
-    if [ -f "$file" ]; then
-      # Get length of file
-      report_len=$(wc -c < "$file")
-      if [ "$report_len" -ne 0 ]; then
-        message "    ${g}+${x} $(echo "$file" | sed "s|^$git_root/||") ($(echo "$report_len" | tr -d ' ') bytes)"
-        # append to to upload
-        _filename=$(basename "$file")
-        if [ "${_filename##*.}" = 'gcov' ]; then
-          echo "# path=$(echo "$file.reduced" | sed "s|^$git_root/||")" >> $upload_file
-          head -1 $file >> $upload_file
-          awk -F': *' '{print $1":"$2":"}' $file \
-            | sed '\/: *} *$/d' \
-            | sed 's/^ *//' \
-            | sed '/^-/d' \
-            | sed 's/^function.*/func/' >> $upload_file
+# Determine whether to use stdin of report files
+if [ "$stdin_content" != '' ]; then
+  message "${s} Found report data via stdin"
+  cat "$stdin_content" >> $upload_file
+elif [ "$num_of_files" != '' ] && [ "$files" != '' ]; then
+  message "${s} Found $num_of_files reports"
+  # Read coverage reports
+  fr=0
+  while IFS='' read -r file;
+  do
+    # Read each coverage report file
+    if [ "$(echo "$file" | tr -d ' ')" != '' ]; then
+      if [ -f "$file" ]; then
+        # Get length of file
+        report_len=$(wc -c < "$file")
+        if [ "$report_len" -ne 0 ]; then
+          message "    ${g}+${x} $(echo "$file" | sed "s|^$git_root/||") ($(echo "$report_len" | tr -d ' ') bytes)"
+          # append to to upload
+          _filename=$(basename "$file")
+          if [ "${_filename##*.}" = 'gcov' ]; then
+            echo "# path=$(echo "$file.reduced" | sed "s|^$git_root/||")" >> $upload_file
+            head -1 $file >> $upload_file
+            awk -F': *' '{print $1":"$2":"}' $file \
+              | sed '\/: *} *$/d' \
+              | sed 's/^ *//' \
+              | sed '/^-/d' \
+              | sed 's/^function.*/func/' >> $upload_file
+          else
+            echo "# path=$(echo "$file" | sed "s|^$git_root/||")" >> $upload_file
+            cat "$file" >> $upload_file
+          fi
+          echo "<<<<<< EOF" >> $upload_file
+          fr=1
         else
-          echo "# path=$(echo "$file" | sed "s|^$git_root/||")" >> $upload_file
-          cat "$file" >> $upload_file
+          message "    ${r}-${x} Skipping empty file $file"
         fi
-        echo "<<<<<< EOF" >> $upload_file
-        fr=1
       else
-        message "    ${r}-${x} Skipping empty file $file"
+        message "    ${r}-${x} File not found at $file"
       fi
-    else
-      message "    ${r}-${x} File not found at $file"
     fi
-  fi
-done <<< "$(echo -e "$files")"
+  done <<< "$(echo -e "$files")"
 
-if [ "$fr" = "0" ]; then
-  message "${f} No coverage data found."
-  message "    ${r}+${x}Please visit ${b}http://docs.cvrg.report/supported-languages${x}"
+  if [ "$fr" = "0" ]; then
+    message "${f} No coverage data found."
+    message "    ${r}+${x} Please visit ${b}http://docs.cvrg.report/supported-languages${x}"
+    exit $failure_exit_code;
+  fi
+
+else
+  message "${f} No report data found"
   exit $failure_exit_code;
 fi
 
