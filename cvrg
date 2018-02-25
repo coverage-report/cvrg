@@ -567,21 +567,20 @@ yaml=$(echo "$yaml" | head -1)
 
 # Parse YAML config and set values
 if [ "$yaml" != "" ]; then
-  message "${s} Yaml configuration found at $yaml"
+  message "${s} YAML configuration found at $yaml"
   config=$(parse_yaml "$git_root/$yaml" || echo '')
   if [ "$(echo "$config" | grep 'cvrg_token="')" != "" ] && [ "$token" = "" ]; then
-    message "${s} Token set from yaml configuration$"
+    message "${s} Token set from YAML configuration"
     token="$(echo "$config" | grep 'cvrg_token="' | sed -e 's/cvrg_token="//' | sed -e 's/"\.*//')"
   fi
-
   if [ "$(echo "$config" | grep 'cvrg_slug="')" != "" ] && [ "$slug" = "" ]; then
-    message "${s} Slug set from yaml configuration"
+    message "${s} Slug set from YAML configuration"
     slug="$(echo "$config" | grep 'cvrg_slug="' | sed -e 's/cvrg_slug="//' | sed -e 's/"\.*//')"
   elif  [ "$slug" != "" ]; then
     message "${s} Slug set from git remote"
   fi
 else
-  message "${f} Yaml configuration file not found, but that's fine! Learn more at http://docs.cvrg.report/yaml-config"
+  message "${a} No YAML configuration found, but that's fine! Learn more at ${b}https://docs.cvrg.report/yaml-config${x}"
 fi
 
 # Coverage report file patterns
@@ -776,7 +775,7 @@ elif [ "$num_of_files" != '' ] && [ "$files" != '' ]; then
 
   if [ "$fr" = "0" ]; then
     message "${f} No coverage data found."
-    message "    ${r}+${x} Please visit ${b}http://docs.cvrg.report/supported-languages${x}"
+    message "    ${r}+${x} Please visit ${b}https://docs.cvrg.report/getting-started${x}"
     exit $failure_exit_code;
   fi
 
@@ -809,7 +808,7 @@ if [ "$dump" != "0" ]; then
   query=$(echo "${query}" | tr -d ' ')
   message "${s} Dumping upload file (no upload)"
   message "    ${g}+${x} URL: ${b}$api_url${x}"
-  message "    ${g}+${x} Query:${x} $query"
+  message "    ${g}+${x} Query: $query"
   cat $upload_file
   exit 0
 else
@@ -819,7 +818,7 @@ else
   query=$(echo "${query}" | tr -d ' ')
   message "${s} Uploading coverage reports to cvrg.report"
   message "    ${g}+${x} URL: ${b}$api_url${x}"
-  message "    ${g}+${x} Query:${x} $query"
+  message "    ${g}+${x} Query: $query"
   message "    ${g}+${x} Starting upload..."
 
   # Add token to query
