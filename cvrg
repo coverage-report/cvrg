@@ -31,9 +31,11 @@ stdin_content_str=""
 service_name="local"
 service_job_id=""
 service_pull_request=""
+remote_url=""
 repo_host=""
 slug=""
 build=""
+build_url=""
 token=""
 git_root=$(git rev-parse --show-toplevel 2>/dev/null || echo $PWD)
 git_remotes=""
@@ -245,42 +247,43 @@ message "
 
 # Check for piped input via stdin
 if [ -t 0 ]; then
-    message "${s} Running interactively"
+  message "${s} Running interactively"
 else
-    stdin_content=$(cat)
-    stdin_len=$(echo -n "$stdin_content" | wc -m)
-    stdin_content_str=$(echo "$stdin_content" | sed -e ':a' -e 'N' -e '$!ba' -e 's/\n/\\n/g')
-    message "${s} Got piped input ($(trim $stdin_len) bytes)"
+  stdin_content=$(cat)
+  stdin_len=$(echo -n "$stdin_content" | wc -m)
+  stdin_content_str=$(echo "$stdin_content" | sed -e ':a' -e 'N' -e '$!ba' -e 's/\n/\\n/g')
+  message "${s} Got piped input ($(trim $stdin_len) bytes)"
 fi
 
 # Drone CI
 if [[ ! -z "$DRONE" ]]; then
-    message "${s} Drone CI detected"
-    service_name="drone-ci"
-    service_job_id="$DRONE_JOB_NUMBER"
-    service_pull_request="$DRONE_PULL_REQUEST"
-    build="$DRONE_BUILD_NUMBER"
-    git_committer_name="$DRONE_COMMIT_AUTHOR"
-    git_committer_email="$DRONE_COMMIT_AUTHOR_EMAIL"
-    git_commit="$DRONE_COMMIT"
-    git_branch="$DRONE_BRANCH"
-    git_message="$DRONE_COMMIT_MESSAGE"
-    git_tag="$DRONE_TAG"
+  message "${s} Drone CI detected"
+  service_name="drone-ci"
+  service_job_id="$DRONE_JOB_NUMBER"
+  service_pull_request="$DRONE_PULL_REQUEST"
+  build="$DRONE_BUILD_NUMBER"
+  build_url=$(urlencode "${DRONE_BUILD_LINK}")
+  git_committer_name="$DRONE_COMMIT_AUTHOR"
+  git_committer_email="$DRONE_COMMIT_AUTHOR_EMAIL"
+  git_commit="$DRONE_COMMIT"
+  git_branch="$DRONE_BRANCH"
+  git_message="$DRONE_COMMIT_MESSAGE"
+  git_tag="$DRONE_TAG"
 fi
 
 # Travis CI
 if [ "$CI" = "true" ] && [ "$TRAVIS" = "true" ] && [ "$SHIPPABLE" != "true" ]; then
-    message "${s} Travis CI detected"
-    service_name="travis-ci"
-    service_job_id="$TRAVIS_JOB_ID"
-    service_pull_request="$TRAVIS_PULL_REQUEST"
-    slug="$TRAVIS_REPO_SLUG"
-    build="$TRAVIS_JOB_NUMBER"
-    git_tag="$TRAVIS_TAG"
-    git_commit="${TRAVIS_PULL_REQUEST_SHA:-$TRAVIS_COMMIT}"
-    if [ "$TRAVIS_BRANCH" != "$TRAVIS_TAG" ]; then
-      git_branch="$TRAVIS_BRANCH"
-    fi
+  message "${s} Travis CI detected"
+  service_name="travis-ci"
+  service_job_id="$TRAVIS_JOB_ID"
+  service_pull_request="$TRAVIS_PULL_REQUEST"
+  slug="$TRAVIS_REPO_SLUG"
+  build="$TRAVIS_JOB_NUMBER"
+  git_tag="$TRAVIS_TAG"
+  git_commit="${TRAVIS_PULL_REQUEST_SHA:-$TRAVIS_COMMIT}"
+  if [ "$TRAVIS_BRANCH" != "$TRAVIS_TAG" ]; then
+    git_branch="$TRAVIS_BRANCH"
+  fi
 fi
 
 # Jenkins
@@ -288,6 +291,8 @@ if [[ ! -z "$JENKINS_URL" || ! -z "$JENKINS_HOME" ]]; then
   message "${s} Jenkins detected"
   service_name="jenkins-ci"
   service_job_id="$BUILD_ID"
+  build="$BUILD_NUMBER"
+  build_url=$(urlencode "$BUILD_URL")
 
   if [ "$ghprbSourceBranch" != "" ]; then
     git_branch="$ghprbSourceBranch"
@@ -310,11 +315,26 @@ if [[ ! -z "$JENKINS_URL" || ! -z "$JENKINS_HOME" ]]; then
   fi
 fi
 
+# Teamcity
+if [ "$TEAMCITY_VERSION" != "" ]; then
+  message "${s} Teamcity CI detected."
+  service_name="teamcity"
+  build="$TEAMCITY_BUILD_ID"
+  build_url=$(urlencode "$TEAMCITY_BUILD_URL")
+  if [ "$TEAMCITY_BUILD_COMMIT" != "" ]; then
+    git_commit="$TEAMCITY_BUILD_COMMIT"
+  else
+    git_commit="$BUILD_VCS_NUMBER"
+  fi
+  git_branch="$TEAMCITY_BUILD_BRANCH"
+  remote_url="$TEAMCITY_BUILD_REPOSITORY"
+fi
+
 # Circle CI
 if [[ ! -z "$CIRCLECI" ]]; then
   message "${s} Circle CI detected"
   service_name="circle-ci"
-  service_job_id="$CIRCLE_NODE_INDEX"
+  service_job_id="$CIRCLE_BUILD_NUM"
   service_pull_request="$CIRCLE_PR_NUMBER"
   build="$CIRCLE_BUILD_NUM"
   git_commit="$CIRCLE_SHA1"
@@ -332,6 +352,8 @@ if [[ ! -z "$CI_NAME" && "$CI_NAME" == "codeship" ]]; then
   message "${s} Codeship CI detected"
   service_name="codeship"
   service_job_id="$CI_BUILD_NUMBER"
+  build="$CI_BUILD_NUMBER"
+  build_url=$(urlencode "$CI_BUILD_URL")
   git_committer_name="$CI_COMMITTER_NAME"
   git_committer_email="$CI_COMMITTER_EMAIL"
   git_commit="$CI_COMMIT_ID"
@@ -344,6 +366,7 @@ if [ "$BUDDYBUILD_BRANCH" != "" ]; then
   message "${s} Buddybuild detected"
   service_name="buddybuild"
   build="$BUDDYBUILD_BUILD_NUMBER"
+  build_url="https://dashboard.buddybuild.com/public/apps/$BUDDYBUILD_APP_ID/build/$BUDDYBUILD_BUILD_ID"
   git_branch="$BUDDYBUILD_BRANCH"
 fi
 
@@ -352,6 +375,7 @@ if [ "${bamboo_planRepository_revision}" != "" ]; then
   message "${s} Bamboo CI detected"
   service_name="bamboo"
   build="${bamboo_buildNumber}"
+  build_url="${bamboo_buildResultsUrl}"
   git_commit="${bamboo_planRepository_revision}"
   git_branch="${bamboo_planRepository_branch}"
 fi
@@ -362,6 +386,7 @@ if [ "$CI" = "true" ] && [ "$BITRISE_IO" = "true" ]; then
   service_name="bitrise"
   service_pull_request="$BITRISE_PULL_REQUEST"
   build="$BITRISE_BUILD_NUMBER"
+  build_url=$(urlencode "$BITRISE_BUILD_URL")
   git_branch="$BITRISE_GIT_BRANCH"
   if [ "$GIT_CLONE_COMMIT_HASH" != "" ]; then
     git_commit="$GIT_CLONE_COMMIT_HASH"
@@ -377,6 +402,7 @@ if [ "$CI" = "true" ] && [ "$BUILDKITE" = "true" ]; then
     service_pull_request="$BUILDKITE_PULL_REQUEST"
   fi
   build="$BUILDKITE_BUILD_NUMBER"
+  build_url=$(urlencode "$BUILDKITE_BUILD_URL")
   slug="$BUILDKITE_PROJECT_SLUG"
   git_branch="$BUILDKITE_BRANCH"
   git_commit="$BUILDKITE_COMMIT"
@@ -396,6 +422,8 @@ if [ ! -z "$CF_BUILD_URL" ] && [ ! -z "$CF_BUILD_ID" ]; then
   message "${s} Codefresh detected"
   service_name="codefresh"
   service_job_id="$CF_BUILD_ID"
+  build="$CF_BUILD_ID"
+  build_url=$(urlencode "$CF_BUILD_URL")
   git_commit="$CF_REVISION"
   git_branch="$CF_BRANCH"
 fi
@@ -405,6 +433,7 @@ if [[ ! -z "$WERCKER" ]]; then
   message "${s} Wercker detected"
   service_name="wercker"
   service_job_id="$WERCKER_BUILD_ID"
+  build="$WERCKER_MAIN_PIPELINE_STARTED"
   slug="$WERCKER_GIT_OWNER/$WERCKER_GIT_REPOSITORY"
   git_commit="$WERCKER_GIT_COMMIT"
   git_branch="$WERCKER_GIT_BRANCH"
@@ -425,6 +454,7 @@ if [[ ! -z "$GITLAB_CI" ]]; then
   service_name="gitlab-ci"
   service_job_id="$CI_BUILD_ID"
   build="${CI_BUILD_ID:-$CI_JOB_ID}"
+  remote_url="${CI_BUILD_REPO:-$CI_REPOSITORY_URL}"
   git_commit="${CI_BUILD_REF:-$CI_COMMIT_SHA}"
   git_branch="${CI_BUILD_REF_NAME:-$CI_COMMIT_REF_NAME}"
 fi
@@ -435,6 +465,7 @@ if [ "$GREENHOUSE" = "true" ]; then
   service_name="greenhouse"
   service_pull_request="$GREENHOUSE_PULL_REQUEST"
   build="$GREENHOUSE_BUILD_NUMBER"
+  build_url=$(urlencode "$GREENHOUSE_BUILD_URL")
   git_branch="$GREENHOUSE_BRANCH"
   git_commit="$GREENHOUSE_COMMIT"
 fi
@@ -445,6 +476,7 @@ if [ "$CI" = "True" ] && [ "$APPVEYOR" = "True" ]; then
   service_name="appveyor"
   service_job_id="$APPVEYOR_BUILD_ID"
   service_pull_request="$APPVEYOR_PULL_REQUEST_NUMBER"
+  build=$(urlencode "$APPVEYOR_JOB_ID")
   slug="$APPVEYOR_REPO_NAME"
   git_committer_name="$APPVEYOR_REPO_COMMIT_AUTHOR"
   git_committer_email="$APPVEYOR_REPO_COMMIT_AUTHOR_EMAIL"
@@ -461,6 +493,7 @@ if [[ ! -z "$SHIPPABLE" ]]; then
   service_job_id="$SHIPPABLE_BUILD_ID"
   service_pull_request="$PULL_REQUEST"
   build="$BUILD_NUMBER"
+  build_url=$(urlencode "$BUILD_URL")
   slug="$REPO_FULL_NAME"
   git_committer_name="$COMMITTER"
   git_commit="$COMMIT"
@@ -480,20 +513,31 @@ if [[ ! -z "$SEMAPHORE" ]]; then
   git_commit="$REVISION"
 fi
 
+# Fill remote_url from git origin if empty
+if [ "$remote_url" = "" ]; then
+  remote_url=$(git config --get remote.origin.url || echo '')
+fi
+
+# Get repo_host
+if [ "$remote_url" != "" ]; then
+  if echo "$remote_url" | grep -q "//"; then
+    # https
+    repo_host=$(echo "$remote_url" | cut -d / -f 3 | sed -e 's/\.com$//')
+  else
+    # ssh
+    repo_host=$(echo "$remote_url" | cut -d @ -f 2 | cut -d . -f 1)
+  fi
+fi
+
 # Get slug
 if [ "$slug" = "" ]; then
-  if [ "$remote_addr" = "" ]; then
-    remote_addr=$(git config --get remote.origin.url || echo '')
-  fi
-  if [ "$remote_addr" != "" ]; then
-    if echo "$remote_addr" | grep -q "//"; then
+  if [ "$remote_url" != "" ]; then
+    if echo "$remote_url" | grep -q "//"; then
       # https
-      slug=$(echo "$remote_addr" | cut -d / -f 4,5 | sed -e 's/\.git$//')
-      repo_host=$(echo "$remote_addr" | cut -d / -f 3 | sed -e 's/\.com$//')
+      slug=$(echo "$remote_url" | cut -d / -f 4,5 | sed -e 's/\.git$//')
     else
       # ssh
-      slug=$(echo "$remote_addr" | cut -d : -f 2 | sed -e 's/\.git$//')
-      repo_host=$(echo "$remote_addr" | cut -d @ -f 2 | cut -d . -f 1)
+      slug=$(echo "$remote_url" | cut -d : -f 2 | sed -e 's/\.git$//')
     fi
   fi
   if [ "$slug" = "/" ]; then
@@ -537,7 +581,7 @@ if [ "$yaml" != "" ]; then
     message "${s} Slug set from git remote"
   fi
 else
-  message "${f} Yaml configuration file not found, but that's fine! Learn more at http://docs.cvrg.report/cvrg-yaml"
+  message "${f} Yaml configuration file not found, but that's fine! Learn more at http://docs.cvrg.report/yaml-config"
 fi
 
 # Coverage report file patterns
@@ -748,6 +792,7 @@ query="service_name=$service_name\
        &repo_host=$repo_host\
        &slug=$(urlencode "$slug")\
        &build=$build\
+       &build_url=$build_url\
        &git_root=$(urlencode "$git_root")\
        &git_remotes=$(urlencode "$git_remotes")\
        &git_user_name=$(urlencode "$git_user_name")\
