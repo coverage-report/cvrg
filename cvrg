@@ -691,7 +691,7 @@ upload_file=`mktemp /tmp/cvrg.XXXXXXXX`
 # Determine whether to use stdin of report files
 if [ "$stdin_content" != '' ]; then
   message "${s} Found report data via stdin"
-  cat "$stdin_content" >> $upload_file
+  echo "$stdin_content" >> $upload_file
 elif [ "$num_of_files" != '' ] && [ "$files" != '' ]; then
   message "${s} Found $num_of_files reports"
   # Read coverage reports
