@@ -11,10 +11,20 @@ version="0.1.0"
 # cvrg.report API endpoint
 api_url="https://api.cvrg.report"
 
-# curl arguments
+# curl related
 curl_silent="-s"
 curl_arguments=""
 curl_cacert=""
+
+# gcov related
+gcov_executable="gcov"
+gcov_include=""
+gcov_ignore="-not -path './node_modules/**' -not -path './bower_components/**' -not -path './vendor/**'"
+gcov_arguments=""
+
+# Flags
+flag_gcov="1"
+flag_coveragepy="1"
 
 # Exit code on failure
 failure_exit_code=0
@@ -28,7 +38,7 @@ cvrg_yml=""
 # Defaults
 stdin_content=""
 stdin_content_str=""
-service_name="local"
+service_name="${CVRG_NAME:-local}"
 service_job_id=""
 service_pull_request=""
 remote_url=""
@@ -36,7 +46,8 @@ repo_host=""
 slug=""
 build=""
 build_url=""
-token=""
+token="$CVRG_TOKEN"
+labels="$CVRG_LABELS"
 git_root=$(git rev-parse --show-toplevel 2>/dev/null || echo $PWD)
 git_remotes=""
 git_user_name=$(git log -1 --pretty=%an | cat)
@@ -48,6 +59,14 @@ git_commit_timestamp=$(git show -s --format=%ct $git_commit)
 git_branch=$(git symbolic-ref HEAD 2>/dev/null | cut -d"/" -f 3)
 git_message=$(git log -1 --pretty=%B | cat)
 git_tag=$(git describe --abbrev=0 2>/dev/null || echo "")
+
+# Fix git root
+if [ "$git_root" = "$PWD" ]; then
+  git_root="."
+fi
+
+# Assign project root
+project_root="$git_root"
 
 # Colorizing the shell output (see https://stackoverflow.com/a/28938235/1603357)
 x='\033[0m'       # Color reset
@@ -73,30 +92,42 @@ cat << EOF
 
     --- General options ---
 
-    -h        Show this help screen and exit
-    -f        Fail with a exit code of 1 instead of 0
-    -y path   Configuration YAML file path
-    -u url    API endpoint base URL (default: https://api.cvrg.report)
-    -t token  Project token (if not passed via YAML configuration file)
+    -h          Show this help screen and exit
+    -f          Fail with a exit code of 1 instead of 0
+    -y path     Configuration YAML file path
+    -u url      API endpoint base URL (default: https://api.cvrg.report)
+    -t token    Project token (if not passed via YAML configuration file)
+    -F flag     Disable features
+
+                gcov        Disable gcov
+                coveragepy  Disable coverage.py
 
     --- curl options ---
 
-    -c path   Path to your custom cacert.pem file
-    -a args   Additional curl arguments
+    -c path     Path to your custom cacert.pem file
+    -a "args"   Additional curl arguments
+
+    --- gcov options ---
+
+    -i glob     Path to ignore while gathering reports
+    -I glob     Path to include while gathering reports
+    -e exe      Executable for gcov to use. Default is 'gcov'
+    -g "args"   Additional gcov arguments
 
     --- Project-related overrides ---
 
-    -R path   Project root path
-    -B name   Branch name
-    -C sha    Commit hash
-    -M msg    Commit message
-    -T tag    Tag name
+    -R path     Project root path
+    -B name     Branch name
+    -C sha      Commit hash
+    -M "msg"    Commit message
+    -T tag      Tag name
 
-    -n name   Service name (will be filled automatically for known CIs)
-    -j id     Job identifier
-    -b id     Build identifier
-    -p info   Pull request information
-    -s slug   Owner/Repo information
+    -n "name"   Custom name (will be filled automatically for known CIs)
+    -j id       Job identifier
+    -b id       Build identifier
+    -l "labels" Labels for this run (comma-separated)
+    -p "info"   Pull request information
+    -s slug     Owner/Repo information
 
     --- Debugging ---
 
@@ -165,7 +196,7 @@ cleanup() {
 
 # Handle arguments/options
 if [ $# != 0 ]; then
-  while getopts "a:b:B:c:C:dfhj:M:n:p:R:s:t:T:u:vy:" o
+  while getopts "a:b:B:c:C:de:fF:g:hi:I:j:l:M:n:p:R:s:t:T:u:vy:" o
   do
     case "$o" in
       "a")
@@ -186,15 +217,37 @@ if [ $# != 0 ]; then
       "d")
         dump="1"
         ;;
+      "e")
+        gcov_executable=$OPTARG
+        ;;
       "f")
         failure_exit_code=1
+        ;;
+      "F")
+        if [ "$OPTARG" = "gcov" ]; then
+          flag_gcov="0"
+        elif [ "$OPTARG" = "coveragepy" ]; then
+          flag_coveragepy="0"
+        fi
+        ;;
+      "g")
+        gcov_arguments=$OPTARG
         ;;
       "h")
         help
         exit 0;
         ;;
+      "i")
+        gcov_ignore="$gcov_ignore -not -path '$OPTARG'"
+        ;;
+      "I")
+        gcov_include="$gcov_include -path '$OPTARG'"
+        ;;
       "j")
         service_job_id="$OPTARG"
+        ;;
+      "l")
+        labels="$OPTARG"
         ;;
       "M")
         git_message="$OPTARG"
@@ -570,219 +623,270 @@ if [ "$yaml" != "" ]; then
   message "${s} YAML configuration found at $yaml"
   config=$(parse_yaml "$git_root/$yaml" || echo '')
   if [ "$(echo "$config" | grep 'cvrg_token="')" != "" ] && [ "$token" = "" ]; then
-    message "${s} Token set from YAML configuration"
+    message "    ${g}+${x} Token set from YAML configuration"
     token="$(echo "$config" | grep 'cvrg_token="' | sed -e 's/cvrg_token="//' | sed -e 's/"\.*//')"
   fi
   if [ "$(echo "$config" | grep 'cvrg_slug="')" != "" ] && [ "$slug" = "" ]; then
-    message "${s} Slug set from YAML configuration"
+    message "    ${g}+${x} Slug set from YAML configuration"
     slug="$(echo "$config" | grep 'cvrg_slug="' | sed -e 's/cvrg_slug="//' | sed -e 's/"\.*//')"
   elif  [ "$slug" != "" ]; then
-    message "${s} Slug set from git remote"
+    message "    ${g}+${x} Slug set from git remote"
   fi
 else
   message "${a} No YAML configuration found, but that's fine! Learn more at ${b}https://docs.cvrg.report/yaml-config${x}"
 fi
 
-# Coverage report file patterns
-patterns="find $git_root \( \
-        -name vendor \
-        -or -name htmlcov \
-        -or -name virtualenv \
-        -or -name js/generated/coverage \
-        -or -name .virtualenv \
-        -or -name virtualenvs \
-        -or -name .virtualenvs \
-        -or -name .env \
-        -or -name .envs \
-        -or -name env \
-        -or -name .yarn-cache \
-        -or -name envs \
-        -or -name .venv \
-        -or -name .venvs \
-        -or -name venv \
-        -or -name venvs \
-        -or -name .git \
-        -or -name .hg \
-        -or -name .tox \
-        -or -name __pycache__ \
-        -or -name '.egg-info*' \
-        -or -name node_modules \
-        -or -name 'conftest_*.c.gcov' \
-    \) -prune -or \
-    -type f \( -name '*coverage*.*' \
-        -or -name 'nosetests.xml' \
-        -or -name 'jacoco*.xml' \
-        -or -name 'clover.xml' \
-        -or -name 'report.xml' \
-        -or -name '*.codecov.*' \
-        -or -name 'codecov.*' \
-        -or -name 'cobertura.xml' \
-        -or -name 'excoveralls.json' \
-        -or -name 'luacov.report.out' \
-        -or -name 'coverage-final.json' \
-        -or -name 'naxsi.info' \
-        -or -name 'lcov.info' \
-        -or -name 'lcov.dat' \
-        -or -name '*.lcov' \
-        -or -name '*.clover' \
-        -or -name 'cover.out' \
-        -or -name 'gcov.info' \
-        -or -name '*.gcov' \
-        -or -name '*.lst' \
-    \) \
-        -not -name '*.profdata' \
-        -not -name 'coverage-summary.json' \
-        -not -name 'phpunit-code-coverage.xml' \
-        -not -name '*/classycle/report.xml' \
-        -not -name 'remapInstanbul.coverage*.json' \
-        -not -name 'phpunit-coverage.xml' \
-        -not -name '*codecov.yml' \
-        -not -name '*.serialized' \
-        -not -name '.coverage*' \
-        -not -name '.*coveragerc' \
-        -not -name '*.sh' \
-        -not -name '*.bat' \
-        -not -name '*.ps1' \
-        -not -name '*.env' \
-        -not -name '*.cmake' \
-        -not -name '*.dox' \
-        -not -name '*.ec' \
-        -not -name '*.rst' \
-        -not -name '*.h' \
-        -not -name '*.scss' \
-        -not -name '*.o' \
-        -not -name '*.proto' \
-        -not -name '*.sbt' \
-        -not -name '*.xcoverage.*' \
-        -not -name '*.gz' \
-        -not -name '*.conf' \
-        -not -name '*.p12' \
-        -not -name '*.csv' \
-        -not -name '*.rsp' \
-        -not -name '*.m4' \
-        -not -name '*.pem' \
-        -not -name '*~' \
-        -not -name '*.exe' \
-        -not -name '*.am' \
-        -not -name '*.template' \
-        -not -name '*.cp' \
-        -not -name '*.bw' \
-        -not -name '*.crt' \
-        -not -name '*.log' \
-        -not -name '*.cmake' \
-        -not -name '*.pth' \
-        -not -name '*.in' \
-        -not -name '*.jar*' \
-        -not -name '*.pom*' \
-        -not -name '*.png' \
-        -not -name '*.jpg' \
-        -not -name '*.sql' \
-        -not -name '*.jpeg' \
-        -not -name '*.svg' \
-        -not -name '*.gif' \
-        -not -name '*.csv' \
-        -not -name '*.snapshot' \
-        -not -name '*.mak*' \
-        -not -name '*.bash' \
-        -not -name '*.data' \
-        -not -name '*.py' \
-        -not -name '*.class' \
-        -not -name '*.xcconfig' \
-        -not -name '*.ec' \
-        -not -name '*.coverage' \
-        -not -name '*.pyc' \
-        -not -name '*.cfg' \
-        -not -name '*.egg' \
-        -not -name '*.ru' \
-        -not -name '*.css' \
-        -not -name '*.less' \
-        -not -name '*.pyo' \
-        -not -name '*.whl' \
-        -not -name '*.html' \
-        -not -name '*.ftl' \
-        -not -name '*.erb' \
-        -not -name '*.rb' \
-        -not -name '*.js' \
-        -not -name '*.jade' \
-        -not -name '*.db' \
-        -not -name '*.md' \
-        -not -name '*.cpp' \
-        -not -name '*.gradle' \
-        -not -name '*.tar.tz' \
-        -not -name '*.scss' \
-        -not -name 'include.lst' \
-        -not -name 'fullLocaleNames.lst' \
-        -not -name 'inputFiles.lst' \
-        -not -name 'createdFiles.lst' \
-        -not -name 'scoverage.measurements.*' \
-        -not -name 'test_*_coverage.txt' \
-        -not -name 'testrunner-coverage*' \
-        -print 2>/dev/null"
-
-# Search for coverage report files
-files=$(eval "$patterns" || echo '')
-
-# Count found files
-num_of_files=$(echo "$files" | wc -l | tr -d ' ')
-
-# Get timestamp
-run_at_timestamp=$(date +"%s")
-
 # Create temporary upload file
 upload_file=`mktemp /tmp/cvrg.XXXXXXXX`
 
-# Determine whether to use stdin of report files
-if [ "$stdin_content" != '' ]; then
-  message "${s} Found report data via stdin"
-  echo "$stdin_content" >> $upload_file
-elif [ "$num_of_files" != '' ] && [ "$files" != '' ]; then
-  message "${s} Found $num_of_files reports"
-  # Read coverage reports
-  fr=0
-  while IFS='' read -r file;
-  do
-    # Read each coverage report file
-    if [ "$(echo "$file" | tr -d ' ')" != '' ]; then
-      if [ -f "$file" ]; then
-        # Get length of file
-        report_len=$(wc -c < "$file")
-        if [ "$report_len" -ne 0 ]; then
-          message "    ${g}+${x} $(echo "$file" | sed "s|^$git_root/||") ($(echo "$report_len" | tr -d ' ') bytes)"
-          # append to to upload
-          _filename=$(basename "$file")
-          if [ "${_filename##*.}" = 'gcov' ]; then
-            echo "# path=$(echo "$file.reduced" | sed "s|^$git_root/||")" >> $upload_file
-            head -1 $file >> $upload_file
-            awk -F': *' '{print $1":"$2":"}' $file \
-              | sed '\/: *} *$/d' \
-              | sed 's/^ *//' \
-              | sed '/^-/d' \
-              | sed 's/^function.*/func/' >> $upload_file
-          else
-            echo "# path=$(echo "$file" | sed "s|^$git_root/||")" >> $upload_file
-            cat "$file" >> $upload_file
+# Determine whether to use stdin or search/execute reports. If stdin is non-empty, don't search/execute.
+if [ "$stdin_content" = '' ]; then
+
+  # Check if gcov is available
+  if which $gcov_executable >/dev/null 2>&1; then
+    message "${s} gcov executable found"
+  else
+    flag_gcov="0"
+    message "${f} gcov executable not found. Running gcov reports is disabled"
+  fi
+
+  # Run gcov coverage report generation
+  if [ "$flag_gcov" = "1" ]; then
+    message "${s} Running gcov in $project_root ${y}(disable via -F gcov)${x}"
+    bash -c "find $project_root -type f -name '*.gcno' $gcov_include $gcov_ignore -exec $gcov_executable -pb $gcov_arguments {} +" || true
+  else
+    message "${a} Running gcov is disabled"
+  fi
+
+  # Run Python coverage.py report generation
+  if [ "$flag_coveragepy" = "1" ]; then
+    if [ ! -f coverage.xml ]; then
+      if which coverage >/dev/null 2>&1; then
+        message "${s} Python coveragepy exists ${y}(disable via -F coveragepy)${x}"
+        dotcoverage=$(find "$git_root" -name '.coverage' -or -name '.coverage.*' | head -1 || echo '')
+        if [ "$dotcoverage" != "" ]; then
+          cd "$(dirname "$dotcoverage")"
+          if [ ! -f .coverage ]; then
+            message "    ${g}+{x} Running coverage combine"
+            coverage combine -a
           fi
-          echo "<<<<<< EOF" >> $upload_file
-          fr=1
+          message "    ${g}+${x} Running coverage xml"
+          if [ "$(coverage xml -i)" != "No data to report." ]; then
+            files="$files
+$PWD/coverage.xml"
+          else
+            message "    ${r}-${x} No data to report."
+          fi
+          cd "$project_root"
         else
-          message "    ${r}-${x} Skipping empty file $file"
+          message "    ${r}-${x} No .coverage file found"
         fi
       else
-        message "    ${r}-${x} File not found at $file"
+        message "${f} Python coveragepy not found"
       fi
     fi
-  done <<< "$(echo -e "$files")"
+  else
+    message "${a} Python coveragepy disabled"
+  fi
 
-  if [ "$fr" = "0" ]; then
-    message "${f} No coverage data found."
-    message "    ${r}+${x} Please visit ${b}https://docs.cvrg.report/getting-started${x}"
+  # Coverage report file patterns
+  patterns="find $git_root \( \
+          -name vendor \
+          -or -name htmlcov \
+          -or -name virtualenv \
+          -or -name js/generated/coverage \
+          -or -name .virtualenv \
+          -or -name virtualenvs \
+          -or -name .virtualenvs \
+          -or -name .env \
+          -or -name .envs \
+          -or -name env \
+          -or -name .yarn-cache \
+          -or -name envs \
+          -or -name .venv \
+          -or -name .venvs \
+          -or -name venv \
+          -or -name venvs \
+          -or -name .git \
+          -or -name .hg \
+          -or -name .tox \
+          -or -name __pycache__ \
+          -or -name '.egg-info*' \
+          -or -name node_modules \
+          -or -name 'conftest_*.c.gcov' \
+      \) -prune -or \
+      -type f \( -name '*coverage*.*' \
+          -or -name 'nosetests.xml' \
+          -or -name 'jacoco*.xml' \
+          -or -name 'clover.xml' \
+          -or -name 'report.xml' \
+          -or -name '*.codecov.*' \
+          -or -name 'codecov.*' \
+          -or -name 'cobertura.xml' \
+          -or -name 'excoveralls.json' \
+          -or -name 'luacov.report.out' \
+          -or -name 'coverage-final.json' \
+          -or -name 'naxsi.info' \
+          -or -name 'lcov.info' \
+          -or -name 'lcov.dat' \
+          -or -name '*.lcov' \
+          -or -name '*.clover' \
+          -or -name 'cover.out' \
+          -or -name 'gcov.info' \
+          -or -name '*.gcov' \
+          -or -name '*.lst' \
+      \) \
+          -not -name '*.profdata' \
+          -not -name 'coverage-summary.json' \
+          -not -name 'phpunit-code-coverage.xml' \
+          -not -name '*/classycle/report.xml' \
+          -not -name 'remapInstanbul.coverage*.json' \
+          -not -name 'phpunit-coverage.xml' \
+          -not -name '*codecov.yml' \
+          -not -name '*.serialized' \
+          -not -name '.coverage*' \
+          -not -name '.*coveragerc' \
+          -not -name '*.sh' \
+          -not -name '*.bat' \
+          -not -name '*.ps1' \
+          -not -name '*.env' \
+          -not -name '*.cmake' \
+          -not -name '*.dox' \
+          -not -name '*.ec' \
+          -not -name '*.rst' \
+          -not -name '*.h' \
+          -not -name '*.scss' \
+          -not -name '*.o' \
+          -not -name '*.proto' \
+          -not -name '*.sbt' \
+          -not -name '*.xcoverage.*' \
+          -not -name '*.gz' \
+          -not -name '*.conf' \
+          -not -name '*.p12' \
+          -not -name '*.csv' \
+          -not -name '*.rsp' \
+          -not -name '*.m4' \
+          -not -name '*.pem' \
+          -not -name '*~' \
+          -not -name '*.exe' \
+          -not -name '*.am' \
+          -not -name '*.template' \
+          -not -name '*.cp' \
+          -not -name '*.bw' \
+          -not -name '*.crt' \
+          -not -name '*.log' \
+          -not -name '*.cmake' \
+          -not -name '*.pth' \
+          -not -name '*.in' \
+          -not -name '*.jar*' \
+          -not -name '*.pom*' \
+          -not -name '*.png' \
+          -not -name '*.jpg' \
+          -not -name '*.sql' \
+          -not -name '*.jpeg' \
+          -not -name '*.svg' \
+          -not -name '*.gif' \
+          -not -name '*.csv' \
+          -not -name '*.snapshot' \
+          -not -name '*.mak*' \
+          -not -name '*.bash' \
+          -not -name '*.data' \
+          -not -name '*.py' \
+          -not -name '*.class' \
+          -not -name '*.xcconfig' \
+          -not -name '*.ec' \
+          -not -name '*.coverage' \
+          -not -name '*.pyc' \
+          -not -name '*.cfg' \
+          -not -name '*.egg' \
+          -not -name '*.ru' \
+          -not -name '*.css' \
+          -not -name '*.less' \
+          -not -name '*.pyo' \
+          -not -name '*.whl' \
+          -not -name '*.html' \
+          -not -name '*.ftl' \
+          -not -name '*.erb' \
+          -not -name '*.rb' \
+          -not -name '*.js' \
+          -not -name '*.jade' \
+          -not -name '*.db' \
+          -not -name '*.md' \
+          -not -name '*.cpp' \
+          -not -name '*.gradle' \
+          -not -name '*.tar.tz' \
+          -not -name '*.scss' \
+          -not -name 'include.lst' \
+          -not -name 'fullLocaleNames.lst' \
+          -not -name 'inputFiles.lst' \
+          -not -name 'createdFiles.lst' \
+          -not -name 'scoverage.measurements.*' \
+          -not -name 'test_*_coverage.txt' \
+          -not -name 'testrunner-coverage*' \
+          -print 2>/dev/null"
+
+  # Search for coverage report files
+  files=$(eval "$patterns" || echo '')
+
+  # Count found files
+  num_of_files=$(echo "$files" | wc -l | tr -d ' ')
+
+  if [ "$num_of_files" != '' ] && [ "$files" != '' ]; then
+    message "${s} Found $num_of_files reports"
+    # Read coverage reports
+    fr=0
+    while IFS='' read -r file;
+    do
+      # Read each coverage report file
+      if [ "$(echo "$file" | tr -d ' ')" != '' ]; then
+        if [ -f "$file" ]; then
+          # Get length of file
+          report_len=$(wc -c < "$file")
+          if [ "$report_len" -ne 0 ]; then
+            message "    ${g}+${x} $(echo "$file" | sed "s|^$git_root/||") ($(echo "$report_len" | tr -d ' ') bytes)"
+            # append to to upload
+            _filename=$(basename "$file")
+            if [ "${_filename##*.}" = 'gcov' ]; then
+              echo "# path=$(echo "$file.reduced" | sed "s|^$git_root/||")" >> $upload_file
+              head -1 $file >> $upload_file
+              awk -F': *' '{print $1":"$2":"}' $file \
+                | sed '\/: *} *$/d' \
+                | sed 's/^ *//' \
+                | sed '/^-/d' \
+                | sed 's/^function.*/func/' >> $upload_file
+            else
+              echo "# path=$(echo "$file" | sed "s|^$git_root/||")" >> $upload_file
+              cat "$file" >> $upload_file
+            fi
+            echo "<<<<<< EOF" >> $upload_file
+            fr=1
+          else
+            message "    ${r}-${x} Skipping empty file $file"
+          fi
+        else
+          message "    ${r}-${x} File not found at $file"
+        fi
+      fi
+    done <<< "$(echo -e "$files")"
+
+    if [ "$fr" = "0" ]; then
+      message "${f} No coverage data found."
+      message "    ${r}+${x} Please visit ${b}https://docs.cvrg.report/getting-started${x}"
+      exit $failure_exit_code;
+    fi
+
+  else
+    message "${f} No report data found"
     exit $failure_exit_code;
   fi
 
 else
-  message "${f} No report data found"
-  exit $failure_exit_code;
+  message "${s} Found report data via stdin"
+  echo "$stdin_content" >> $upload_file
 fi
+
+# Get timestamp
+run_at_timestamp=$(date +"%s")
 
 # Prepare query string
 query="service_name=$service_name\
@@ -791,7 +895,8 @@ query="service_name=$service_name\
        &repo_host=$repo_host\
        &slug=$(urlencode "$slug")\
        &build=$build\
-       &build_url=$build_url\
+       &build_url=$(urlencode "$build_url")\
+       &labels=$(urlencode "$labels")\
        &git_root=$(urlencode "$git_root")\
        &git_remotes=$(urlencode "$git_remotes")\
        &git_user_name=$(urlencode "$git_user_name")\
