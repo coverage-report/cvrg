@@ -627,12 +627,20 @@ if [ "$yaml" != "" ]; then
   if [ "$(echo "$config" | grep 'cvrg_token="')" != "" ] && [ "$token" = "" ]; then
     message "    ${g}+${x} Token set from YAML configuration"
     token="$(echo "$config" | grep 'cvrg_token="' | sed -e 's/cvrg_token="//' | sed -e 's/"\.*//')"
+  elif  [ "$token" != "" ]; then
+    message "    ${g}+${x} Token already set, either via env var or flag. Using existing data"
   fi
   if [ "$(echo "$config" | grep 'cvrg_slug="')" != "" ] && [ "$slug" = "" ]; then
     message "    ${g}+${x} Slug set from YAML configuration"
     slug="$(echo "$config" | grep 'cvrg_slug="' | sed -e 's/cvrg_slug="//' | sed -e 's/"\.*//')"
   elif  [ "$slug" != "" ]; then
-    message "    ${g}+${x} Slug set from git remote"
+    message "    ${g}+${x} Slug already set, either via env var or flag. Using existing data"
+  fi
+  if [ "$(echo "$config" | grep 'cvrg_labels="')" != "" ] && [ "$labels" = "" ]; then
+    message "    ${g}+${x} Labels set from YAML configuration"
+    labels="$(echo "$config" | grep 'cvrg_labels="' | sed -e 's/cvrg_labels="//' | sed -e 's/"\.*//')"
+  elif  [ "$labels" != "" ]; then
+    message "    ${g}+${x} Labels already set, either via env var or flag. Using existing data"
   fi
 else
   message "${a} No YAML configuration found, but that's fine! Learn more at ${b}https://docs.cvrg.report/yaml-config${x}"

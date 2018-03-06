@@ -125,3 +125,37 @@ The `cvrg` scripts supports the following CI providers out of the box:
 * [Greenhouse CI](https://nevercode.io/)
 * [AppVeyor](https://www.appveyor.com/)
 * [Semaphore CI](https://semaphoreci.com/)
+
+## Environment variables
+
+The following environment variables can be set before running the `cvrg` script, which will then automatically pick up the data:
+
+* `CVRG_NAME`: The name of the environment/service where the `cvrg` script is run
+* `CVRG_TOKEN`: The repository token (can be found at `https://cvrg.report/$REPO_HOST/$USER/$REPO/settings`)
+* `CVRG_LABELS`: The comma-separated list of labels for this upload
+
+The `$REPO_HOST` can have the values
+
+* `gh` for GitHub
+* `bb` for BitBucket
+* `gl` for GitLab 
+
+## YAML configuration
+
+You can create a configuration file with the name pattern `*cvrg.y*ml` somewhere in your project, and the `cvrg` script will automatically find it an will try to read the configuration values from it.
+
+The following configuration details are supported:
+
+* `cvrg_name`: The name of the environment/service where the `cvrg` script is run
+* `cvrg_token`: The repository token (can be found at `https://cvrg.report/$REPO_HOST/$USER/$REPO/settings`)
+* `cvrg_labels`: The comma-separated list of labels for this upload
+
+**Please consider that if your project is publicly accessible, the specified uplaod token is visible to the public as well!**
+
+### Example configuration file
+
+```yaml
+cvrg_token: tsdjfsoifjojsoidjhfo23ioshfo
+cvrg_slug: test/test
+cvrg_labels: frontend,integration
+```
