@@ -3,6 +3,8 @@
 # Apache License Version 2.0, January 2004
 # https://github.com/cvrg-report/cvrg/blob/master/LICENSE
 
+# Source: https://raw.githubusercontent.com/cvrg-report/cvrg/master/cvrg
+
 set -e +o pipefail
 
 # Version info
@@ -652,7 +654,7 @@ if [ "$stdin_content" = '' ]; then
 
   # Run gcov coverage report generation
   if [ "$flag_gcov" = "1" ]; then
-    message "${s} Running gcov in $project_root ${y}(disable via -F gcov)${x}"
+    message "${s} Running gcov in $project_root ${y}(disable via -D gcov)${x}"
     bash -c "find $project_root -type f -name '*.gcno' $gcov_include $gcov_ignore -exec $gcov_executable -pb $gcov_arguments {} +" || true
   else
     message "${a} Running gcov is disabled"
@@ -662,7 +664,7 @@ if [ "$stdin_content" = '' ]; then
   if [ "$flag_coveragepy" = "1" ]; then
     if [ ! -f coverage.xml ]; then
       if which coverage >/dev/null 2>&1; then
-        message "${s} Python coveragepy exists ${y}(disable via -F coveragepy)${x}"
+        message "${s} Python coveragepy exists ${y}(disable via -D coveragepy)${x}"
         dotcoverage=$(find "$git_root" -name '.coverage' -or -name '.coverage.*' | head -1 || echo '')
         if [ "$dotcoverage" != "" ]; then
           cd "$(dirname "$dotcoverage")"
@@ -858,7 +860,8 @@ $PWD/coverage.xml"
               echo "# path=$(echo "$file" | sed "s|^$git_root/||")" >> $upload_file
               cat "$file" >> $upload_file
             fi
-            echo "<<<<<< EOF" >> $upload_file
+            # Write file separator
+            echo "# end_of_file #" >> $upload_file
             fr=1
           else
             message "    ${r}-${x} Skipping empty file $file"
