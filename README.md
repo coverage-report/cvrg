@@ -44,7 +44,7 @@ The general seeting can by influenced by the following:
   -y path     Configuration YAML file path
   -u url      API endpoint base URL (default: https://api.cvrg.report)
   -t token    Project token (if not passed via YAML configuration file)
-  -F flag     Disable features
+  -D feature  Disable features
   
               gcov        Disable gcov
               coveragepy  Disable coverage.py
@@ -97,3 +97,27 @@ The following arguments can be used for debugging purposes:
   -v        Verbose mode
   -d        Dump the gathered coverage report info (no upload)
 ```
+
+## CI support
+
+The `cvrg` scripts supports the following CI providers out of the box:
+
+* [Travis CI](http://www.travis-ci.org)
+* [Circle CI](http://www.circleci.com)
+* [Codeship](http://www.codeship.com)
+* [GitLab CI](https://about.gitlab.com/gitlab-ci/)
+* [Shippable](http://www.shippable.com)
+* [Drone CI](https://drone.io/)
+* [Jenkins](https://jenkins.io/)
+* [Teamcity](https://www.jetbrains.com/teamcity/)
+* [Buddybuild](https://www.buddybuild.com/)
+* [Bamboo CI](https://www.atlassian.com/software/bamboo)
+* [Bitrise](https://www.bitrise.io/)
+* [Buildkite](https://buildkite.com/)
+* [Heroku CI](https://www.heroku.com/continuous-integration)
+* [Codefresh](https://codefresh.io/)
+* [Wercker](http://www.wercker.com/)
+* [Magnum CI](https://magnum-ci.com/)
+* [Greenhouse CI](https://nevercode.io/)
+* [AppVeyor](https://www.appveyor.com/)
+* [Semaphore CI](https://semaphoreci.com/)

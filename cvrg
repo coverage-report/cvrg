@@ -97,7 +97,7 @@ cat << EOF
     -y path     Configuration YAML file path
     -u url      API endpoint base URL (default: https://api.cvrg.report)
     -t token    Project token (if not passed via YAML configuration file)
-    -F flag     Disable features
+    -D feature  Disable features
 
                 gcov        Disable gcov
                 coveragepy  Disable coverage.py
@@ -196,7 +196,7 @@ cleanup() {
 
 # Handle arguments/options
 if [ $# != 0 ]; then
-  while getopts "a:b:B:c:C:de:fF:g:hi:I:j:l:M:n:p:R:s:t:T:u:vy:" o
+  while getopts "a:b:B:c:C:dD:e:f:g:hi:I:j:l:M:n:p:R:s:t:T:u:vy:" o
   do
     case "$o" in
       "a")
@@ -217,18 +217,18 @@ if [ $# != 0 ]; then
       "d")
         dump="1"
         ;;
-      "e")
-        gcov_executable=$OPTARG
-        ;;
-      "f")
-        failure_exit_code=1
-        ;;
-      "F")
+      "D")
         if [ "$OPTARG" = "gcov" ]; then
           flag_gcov="0"
         elif [ "$OPTARG" = "coveragepy" ]; then
           flag_coveragepy="0"
         fi
+        ;;
+      "e")
+        gcov_executable=$OPTARG
+        ;;
+      "f")
+        failure_exit_code=1
         ;;
       "g")
         gcov_arguments=$OPTARG
@@ -941,7 +941,7 @@ else
     timeout=$[$i*10]
 
     # Send request and capture response
-    response=$(curl $curl_silent $curl_cacert -w "%{http_code}\n%{time_total}" -X POST \
+    response=$(curl $curl_silent $curl_arguments $curl_cacert -w "%{http_code}\n%{time_total}" -X POST \
           --data-binary @$upload_file.gz \
           -H "Content-Type: text/plain" \
           -H "Content-Encoding: gzip" \
@@ -956,7 +956,7 @@ else
 
     # Needs to be a 201 Created
     if [ "$status" = "201" ]; then
-      message "${s} Upload successful in ${time_taken}s"
+      message "${s} Upload successful in $(printf '%0.2f' $time_taken)s"
       message "${s} View reports at ${b}$(echo "$link")${x}"
       exit 0
     elif [ "${status:0:1}" = "5" ]; then
