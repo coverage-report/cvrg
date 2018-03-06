@@ -12,7 +12,7 @@ The download link [https://cvrg.report/bash](https://cvrg.report/bash) redirects
 
 ### Dynamic download (CI/CD usage)
 
-You can download the script for each run, for example when using CI/CD systems. You can include the following command before executing the test commands outputting the [lcov]() coverage reports to download the `cvrg.sh` script which uploads the coverage data to [cvrg.report](https:/cvrg.report/):
+You can download the script for each run, for example when using CI/CD systems. The `cvrg` script needs to be executed after the coverage reports have been created. Exceptions are `gcov` and `coverage.py` based coverage reports, those are run by the script itself. 
 
 ```bash
 curl -s -o ./cvrg https://cvrg.report/bash && chmod +x ./cvrg && ./cvrg
