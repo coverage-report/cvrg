@@ -6,18 +6,22 @@ The goal of this script is to not having to install language-specific coverage r
 
 ## Usage
 
+### Bash script location
+
+The download link [https://cvrg.report/bash](https://cvrg.report/bash) redirects to the the `master` branch of the [cvrg](https://raw.githubusercontent.com/cvrg-report/cvrg/master/cvrg) script on GitHub. 
+
 ### Dynamic download (CI/CD usage)
 
 You can download the script for each run, for example when using CI/CD systems. You can include the following command before executing the test commands outputting the [lcov]() coverage reports to download the `cvrg.sh` script which uploads the coverage data to [cvrg.report](https:/cvrg.report/):
 
 ```bash
-curl -s -o ./cvrg https://raw.githubusercontent.com/cvrg-report/cvrg/master/cvrg && chmod +x ./cvrg && ./cvrg
+curl -s -o ./cvrg https://cvrg.report/bash && chmod +x ./cvrg && ./cvrg
 ```
 
 Direct use of the dynamically downloaded script can be achieved like this: 
 
 ```bash
-bash <(curl -s -o- -L https://raw.githubusercontent.com/cvrg-report/cvrg/master/cvrg)
+bash <(curl -s -o- -L https://cvrg.report/bash)
 ```
 
 ### Adding the uploader to your project
@@ -25,7 +29,7 @@ bash <(curl -s -o- -L https://raw.githubusercontent.com/cvrg-report/cvrg/master/
 You can add the `cvrg` script to your development projects directly, e.g. 
 
 ```bash
-$ mkdir -p .cvrg && wget https://raw.githubusercontent.com/cvrg-report/cvrg/master/cvrg -o .cvrg/cvrg && chmod +x .cvrg/cvrg
+$ mkdir -p .cvrg && wget https://cvrg.report/bash -o .cvrg/cvrg && chmod +x .cvrg/cvrg
 ```
 
 Then, you can use the script at `cvrg/cvrg` to pipe the test coverage output to, or use the automatic discovery of coverage reporting files below the project path.  
