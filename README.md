@@ -150,7 +150,7 @@ The following configuration details are supported:
 * `cvrg_token`: The repository token (can be found at `https://cvrg.report/$REPO_HOST/$USER/$REPO/settings`)
 * `cvrg_labels`: The comma-separated list of labels for this upload
 
-**Please consider that if your project is publicly accessible, the specified uplaod token is visible to the public as well!**
+**Please consider that if your project is publicly accessible, the specified upload token is visible to the public as well!**
 
 ### Example configuration file
 
@@ -159,3 +159,6 @@ cvrg_token: tsdjfsoifjojsoidjhfo23ioshfo
 cvrg_slug: test/test
 cvrg_labels: frontend,integration
 ```
+
+**Please note:** Configuration parameters passed either via environment variable or flag will take precedence over the configuration file.
+ 
